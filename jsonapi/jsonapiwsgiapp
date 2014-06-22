@@ -1,0 +1,145 @@
+#!/usr/bin/env python
+
+import os, json, re
+from cgi import parse_qs, FieldStorage
+from wsgiref.simple_server import make_server
+
+class BaseWsgiApp(object):
+    routes = ()
+
+    def __init__(self):
+        self.params = None
+        self.environ = None
+        self.start_response = None
+        self.directory = os.path.split(os.path.abspath(__file__))[0]
+
+    def __call__(self, environ, start_response):
+        self.params = parse_qs(environ['QUERY_STRING'])
+        fs = FieldStorage(fp=environ['wsgi.input'], environ = environ, keep_blank_values = True)
+        for k in fs.keys():
+            self.params[k] = [fs.getvalue(k, ''),]
+        self.path = environ.get('PATH_INFO', '').lstrip('/').rstrip('/')
+        if not bool(self.path):
+            self.path = "index"
+        self.environ = environ
+        self.start_response = start_response
+        return self._dispatch()
+
+    def _dispatch(self):
+        phpath = os.path.join(self.directory, self.path)
+        try:
+            callback = None
+            kwargs = None
+
+            for route in self.routes:
+                match = re.search(route[0], self.path)
+                if match:
+                    kwargs = match.groupdict()
+                    if kwargs:
+                        args = ()
+                    else:
+                        args = match.groups()
+                    callback = getattr(self, route[1])
+
+            if not callback:
+                spath = self.path.split('/')
+                callback = getattr(self, spath[0])
+                args = tuple(spath[1:])
+
+            if args:
+                return callback(*args)
+            elif kwargs:
+                return callback(**kwargs)
+            else:
+                return callback()
+
+        except Exception, msg:
+            return self.not_found()
+
+        return self.not_found()
+
+    def index(self, *args, **kwargs):
+        self.start_response('200 OK', [('Content-Type', 'text/html')])
+        header = """
+        <html>
+            <head>
+                <title>Index Page</title>
+            </head>
+        """
+        phargs = ""
+        phkwargs = ""
+        envvars = ""
+
+        if len(args):
+            phargs += "<b>Positional Argument:</b><br/>"
+            for a in args:
+                phargs += "%s%s" % (a,'<br/>')
+        if len(kwargs):
+            phkwargs += "<b>Nominal Argument:</b><br/>"
+            for k in kwargs:
+                phkwargs += "%s: %s%s" % (k, kwargs[k],'<br/>')
+
+        for k in self.environ:
+                envvars += "%s: %s%s" % (k, self.environ[k], "<br/>")
+
+        bodydic = {}
+        bodydic['scriptname'] = self.environ.get('SCRIPT_NAME','')
+        bodydic['path'] = self.path
+        bodydic['params'] = self.params
+        bodydic['phargs'] = phargs
+        bodydic['phkwargs'] = phkwargs
+        bodydic['envvars'] = envvars
+
+        body = """
+            <body>
+                <h3 style="text-align: center;">Sample Index Page</h3>
+                <br/><br/>
+                I am: /%(scriptname)s<br/>
+                Requested URL is: /%(path)s<br/>
+                Parameters passed: %(params)s<br/>
+                %(phargs)s
+                %(phkwargs)s<hr/>
+                </hr>
+                %(envvars)s
+                </hr>
+            </body>
+        """ % bodydic
+
+        footer = """</html>"""
+
+        return [header, body, footer]
+
+    def dashboard(self, *args, **kwargs):
+      self.start_response('200 OK', [('Content-Type', 'application/json')])
+      result = {
+        "result": {
+          "dashboard": True
+        }
+      }
+      return json.JSONEncoder().encode(result)
+
+    def settings(self, *args, **kwargs):
+      self.start_response('200 OK', [('Content-Type', 'application/json')])
+      result = {
+        "result": {
+          "settings": self.params.get('me', ["nothing"])[0]
+        }
+      }
+      return json.JSONEncoder().encode(result)
+
+    def not_found(self):
+        self.start_response('404 NOT FOUND', [('Content-Type', 'text/plain')])
+        return ['URL Not Found']
+
+    def server_error(self):
+        self.start_response('500 SERVER ERROR', [('Content-Type', 'text/plain')])
+        return ['Internal/unknown server error']
+
+    @classmethod
+    def run(cls, host = '0.0.0.0', port = 8086):
+        srv = make_server(host, port, cls())
+        print "%s serving at port %d ..." % (host, port)
+        srv.serve_forever()
+
+if __name__ == '__main__':
+        BaseWsgiApp.run()
